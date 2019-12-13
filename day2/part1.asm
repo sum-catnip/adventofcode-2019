@@ -1,5 +1,5 @@
 ; build with
-; nasm part1.asm
+; nasm -felf64 part1.asm
 ; gcc -static part1.o
 
 
@@ -123,120 +123,142 @@ initialize:
 compile_program:
           enter     0, 0
 
-          ; repeat size times
-          mov       rcx, [raw + PROG.size]
+          ; compiled program counter
+          mov       r9, [compiled + PROG.start]
+          ; eax stores the current number
+          xor       rax, rax
+          mov       rsi, [raw + PROG.start]
+          mov       rdi, [raw + PROG.end]
+          xor       r8, r8
 .loop_start:
+          mov       r8b, byte [rsi] ; get current char
+          inc       rsi
+          cmp       r8b, ';'        ; did we reach the delimiter yet?
+          je        .delimiter
 
+          sub       r8b, '0'
+          imul      rax, 10
+          add       rax, r8
+          jmp       .continue
+
+.delimiter:
+          mov       dword [r9], eax
+          add       r9, 4
+          xor       rax, rax
+
+.continue:
+          cmp       rsi, rdi
+          jne       .loop_start
+
+          leave
+          ret
+
+
+; ; parses the opcode at the current [pc]
+; ; calls the appropriate function to handle the opcode
+; scan_opcode:
+;           enter     0, 0
+;           mov       r12, [pc]       ; dereference pc into r12
+;           cmp       byte [r12], '1' ; check if current opcode is opcode '1'
+;           jnz       .check_op2
+;           mov       rdi, instruction_format
+;           mov       rsi, 1
+;           xor       rax, rax
+;           call printf
+; .check_op2:
+;           cmp       byte [r12], '2'
+;           jnz       .check_op99
+;           mov       rdi, instruction_format
+;           mov       rsi, 2
+;           xor       rax, rax
+;           call printf
+; .check_op99:
+;           cmp       word [r12], '99'
+;           jnz       .end
+;           mov       rdi, instruction_format
+;           mov       rsi, 99
+;           xor       rax, rax
+;           call printf
+; .end:
+;           leave
+;           ret
+
+
+; ; calculate the remaining program bytes (bytes not yet executed)
+; calc_remaining:
+;           enter     0, 0
+
+;           lea       rax, [raw + PROG.end] ; find end of prog in memory
+;           sub       rax, [raw + PROG.index] ; diff pc - end of prog
+;           dec       rax                  ; not counting the byte were at
+
+;           leave
+;           ret
+
+
+; ; progresses the program counter until after the next delimiter
+; ; returns how far we moved
+; progress_delimiter:
+;           enter     0, 0
+
+;           call      calc_remaining
+;           mov       rcx, rax             ; remaining bytes into rcx
+;           mov       rax, ','             ; find next occurence of ';'
+;           mov       rdi, [raw + PROG.index] ; starting from pc
+;           mov       r8, rdi              ; save current pc
+;           repne     scasb                ; inc rdi until [rdi] = ','
+;           mov       [raw + PROG.index], rdi
+;           sub       r8, rdi
+;           mov       rax, r8              ; return how far we moved
+
+;           leave
+;           ret
+
+
+; ; parses a string number to an x64 integer
+; ; rdi should hold the size of the string
+; ; rsi should hold the start of the string
+; parse_number:
+;           enter     0, 0
+;           xor       rax, rax             ; result will be in eax
+;           mov       rcx, rdi             ; loop count needs to be in rcx
+
+; .loop_start:
+;           mov       r9, rdi              ; safe string size
+;           sub       r9, rcx              ; how often did we loop yet?
+;           mov       r8, '0'              ; start of ascii number range
+;           sub       r8, [rsi + r9]       ; r8 now holds the int
+;           imul      eax, 10              ; make sum space for the new number
+;           add       eax, r8
+
+;           loop      .loop_start          ; loops rcx times
+
+;           leave
+;           ret
+
+
+; ; processes the opcode 1
+; process_op1:
+;           enter     0, 0
+
+;           mov       r12, [pc]            ; save start of number
+;           call      progress_delimiter   ; move to the next operhand
           
+;           ; rax holds the distance we moved
+;           ; TODO parse 3 arbitrary sized ints
 
-          leave
-          ret
-
-
-; parses the opcode at the current [pc]
-; calls the appropriate function to handle the opcode
-scan_opcode:
-          enter     0, 0
-          mov       r12, [pc]       ; dereference pc into r12
-          cmp       byte [r12], '1' ; check if current opcode is opcode '1'
-          jnz       .check_op2
-          mov       rdi, instruction_format
-          mov       rsi, 1
-          xor       rax, rax
-          call printf
-.check_op2:
-          cmp       byte [r12], '2'
-          jnz       .check_op99
-          mov       rdi, instruction_format
-          mov       rsi, 2
-          xor       rax, rax
-          call printf
-.check_op99:
-          cmp       word [r12], '99'
-          jnz       .end
-          mov       rdi, instruction_format
-          mov       rsi, 99
-          xor       rax, rax
-          call printf
-.end:
-          leave
-          ret
-
-
-; calculate the remaining program bytes (bytes not yet executed)
-calc_remaining:
-          enter     0, 0
-
-          lea       rax, [raw + PROG.end] ; find end of prog in memory
-          sub       rax, [raw + PROG.index] ; diff pc - end of prog
-          dec       rax                  ; not counting the byte were at
-
-          leave
-          ret
-
-
-; progresses the program counter until after the next delimiter
-; returns how far we moved
-progress_delimiter:
-          enter     0, 0
-
-          call      calc_remaining
-          mov       rcx, rax             ; remaining bytes into rcx
-          mov       rax, ','             ; find next occurence of ';'
-          mov       rdi, [raw + PROG.index] ; starting from pc
-          mov       r8, rdi              ; save current pc
-          repne     scasb                ; inc rdi until [rdi] = ','
-          mov       [raw + PROG.index], rdi
-          sub       r8, rdi
-          mov       rax, r8              ; return how far we moved
-
-          leave
-          ret
-
-
-; parses a string number to an x64 integer
-; rdi should hold the size of the string
-; rsi should hold the start of the string
-parse_number:
-          enter     0, 0
-          xor       rax, rax             ; result will be in eax
-          mov       rcx, rdi             ; loop count needs to be in rcx
-
-.loop_start:
-          mov       r9, rdi              ; safe string size
-          sub       r9, rcx              ; how often did we loop yet?
-          mov       r8, '0'              ; start of ascii number range
-          sub       r8, [rsi + r9]       ; r8 now holds the int
-          imul      eax, 10              ; make sum space for the new number
-          add       eax, r8
-
-          loop      .loop_start          ; loops rcx times
-
-          leave
-          ret
-
-
-; processes the opcode 1
-process_op1:
-          enter     0, 0
-
-          mov       r12, [pc]            ; save start of number
-          call      progress_delimiter   ; move to the next operhand
-          
-          ; rax holds the distance we moved
-          ; TODO parse 3 arbitrary sized ints
-
-          leave
-          ret
+;           leave
+        ;   ret
 
 
 main:
           mov       rdi, welcome_msg 
           call      puts
-          call      load_program
-          call      scan_opcode
-          call      progress_delimiter
-          mov       rdi, [pc]
-          call      puts
+          call      initialize
+          call      compile_program
+        ;   call      scan_opcode
+        ;   call      progress_delimiter
+        ;   mov       rdi, [pc]
+        ;   call      puts
 
           ret
