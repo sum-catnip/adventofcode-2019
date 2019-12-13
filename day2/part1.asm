@@ -9,6 +9,7 @@
 %define   PROT_WRITE 2
 
 %define   MAP_PRIVATE 2
+%define   MAP_ANONYMOUS 20
 
           global    main
           extern    puts
@@ -34,9 +35,18 @@ struc FSTAT
     .st_ctime_nsec  resq 1
 endstruc
 
+struc PROG
+    .start          resq 1
+    .end            resq 1
+    .size           resq 1
+    .index          resq 1
+endstruc
+
 
           section   .bss
-          fstat     resb 0x90
+          fstat     resb FSTAT_size
+          compiled  resb PROG_size
+          raw       resb PROG_size
           program   resq 0x01
           prog_size resq 0x01
           pc        resq 0x01
@@ -54,9 +64,10 @@ instruction_format:
           section   .text
 
 
-load_program:
+initialize:
           enter     0,   0          ; prologue with 0 space for locals
 
+          ; first we load the raw program into memory
           mov       rdi, program_path; *filename
           xor       rsi, rsi        ; flags
           mov       rdx, O_RDONLY   ; mode
@@ -71,20 +82,54 @@ load_program:
           mov       r8,  rdi        ; file descriptor
           xor       rdi, rdi        ; addr (null for auto assign)
           mov       rsi, [fstat + FSTAT.st_size] ; size
-          mov       [prog_size], rsi ; save size for later
-          mov       rdx, PROT_READ | PROT_WRITE; protection
+          mov       rdx, PROT_READ  ; protection
           mov       r10, MAP_PRIVATE ; flags
           xor       r9,  r9         ; offset
-          mov       rax, 0x9
+          mov       rax, 0x9        ; sys_mmap
           syscall
 
-          mov       [program], rax  ; store address the mapped file 
+          ; next we initialize the raw program structure
+          mov       [raw + PROG.start], rax ; store address the mapped file 
+          mov       [raw + PROG.index], rax
+          mov       [raw + PROG.size], rsi ; save size for convenient access
+          add       rsi, rax        ; calculate end of program
+          mov       [raw + PROG.end], rsi
 
+          ; program is in memory, descriptor not needed anymore
           mov       rdi, r8         ; file descriptor
           mov       rax, 0x3        ; sys_close
           syscall
 
+          ; allocate memory for the compiled program
+          ; some implementations require fd to be 0 for MAP_ANON
+          mov       r8, -1
+          xor       rdi, rdi        ; addr
+          mov       rsi, [raw + PROG.size]
+          shl       rsi, 2          ; program size * 4 (max possible size)
+          mov       rdx, PROT_READ | PROT_WRITE ; protection
+          mov       r10, MAP_ANONYMOUS | MAP_PRIVATE ; flags
+          xor       r9, r9          ; offset
+          mov       rax, 0x9        ; sys_mmap
+          syscall
+
+          ; save start addr. size and end are not known yet
+          mov       [compiled + PROG.start], rax
+          mov       [compiled + PROG.index], rax
+
           leave                     ; epilogue
+          ret
+
+
+compile_program:
+          enter     0, 0
+
+          ; repeat size times
+          mov       rcx, [raw + PROG.size]
+.loop_start:
+
+          
+
+          leave
           ret
 
 
@@ -122,10 +167,8 @@ scan_opcode:
 calc_remaining:
           enter     0, 0
 
-          mov       rax, [program]       ; deref start of prog memory
-          mov       r8,  [prog_size]     ; deref prog size
-          lea       rax, [rax + r8]      ; find end of prog in memory
-          sub       rax, [pc]            ; diff pc - end of prog
+          lea       rax, [raw + PROG.end] ; find end of prog in memory
+          sub       rax, [raw + PROG.index] ; diff pc - end of prog
           dec       rax                  ; not counting the byte were at
 
           leave
@@ -140,10 +183,10 @@ progress_delimiter:
           call      calc_remaining
           mov       rcx, rax             ; remaining bytes into rcx
           mov       rax, ','             ; find next occurence of ';'
-          mov       rdi, [pc]            ; starting from pc
+          mov       rdi, [raw + PROG.index] ; starting from pc
           mov       r8, rdi              ; save current pc
           repne     scasb                ; inc rdi until [rdi] = ','
-          mov       [pc], rdi
+          mov       [raw + PROG.index], rdi
           sub       r8, rdi
           mov       rax, r8              ; return how far we moved
 
@@ -156,7 +199,7 @@ progress_delimiter:
 ; rsi should hold the start of the string
 parse_number:
           enter     0, 0
-          xor       rax                  ; result will be in rax
+          xor       rax, rax             ; result will be in eax
           mov       rcx, rdi             ; loop count needs to be in rcx
 
 .loop_start:
@@ -164,8 +207,8 @@ parse_number:
           sub       r9, rcx              ; how often did we loop yet?
           mov       r8, '0'              ; start of ascii number range
           sub       r8, [rsi + r9]       ; r8 now holds the int
-          imul      rax, 10              ; make sum space for the new number
-          add       rax, r8
+          imul      eax, 10              ; make sum space for the new number
+          add       eax, r8
 
           loop      .loop_start          ; loops rcx times
 
@@ -191,9 +234,6 @@ main:
           mov       rdi, welcome_msg 
           call      puts
           call      load_program
-          ; initialize program counter to the start of the program in memory
-          mov       r8,  [program]       ; dereference program
-          mov       [pc], r8             ; initialize pc
           call      scan_opcode
           call      progress_delimiter
           mov       rdi, [pc]
