@@ -8,6 +8,7 @@
 ; every number string will be turned into a 32bit integer
 ; and the delimiters are removed since the boundaries are constant
 ; view the output with `hexdump`
+; new: result will also be printed
 
 
 %define   O_RDONLY  0x0
@@ -53,9 +54,7 @@ endstruc
           fstat     resb FSTAT_size
           compiled  resb PROG_size
           raw       resb PROG_size
-          program   resq 1
-          prog_size resq 1
-          pc        resq 1
+          output    resq 1
 
 
           section   .rodata
@@ -276,10 +275,50 @@ run_program:
           ret
 
 
+; thanks to this dude
+; https://codereview.stackexchange.com/questions/142842/integer-to-ascii-algorithm-x86-assembly
+print_result:
+          xor       rax, rax
+          mov       rbx, [compiled + PROG.start]
+          mov       eax, dword [rbx]
+          xor       rbx, rbx
+          xor       ecx, ecx
+          mov       ebx, 0xCCCCCCCD
+          xor       rdi, rdi
+
+.loop_start:
+          mov       ecx, eax      ; save original number
+
+          mul       ebx           ; divide by 10 using agner fog's 'magic number'
+          shr       edx, 3        ;
+
+          mov       eax, edx      ; store quotient for next loop
+
+          lea       edx, [edx * 4 + edx] ; multiply by 10
+          shl       rdi, 8        ; make room for byte
+          lea       edx, [edx * 2 - '0'] ; finish *10 and convert to ascii
+          sub       ecx, edx      ; subtract from original number to get remainder
+
+          lea       rdi, [rdi + rcx] ; store next byte
+
+          test      eax, eax
+          jnz       .loop_start 
+
+          mov       [output], rdi
+          mov       rdi, 1        ; fd (stdout)
+          mov       rsi, output   ; string to output
+          mov       rdx, 8
+          mov       rax, 1        ; sys_write
+          syscall
+
+          ret
+
+
 _start:
           call      initialize
           call      compile_program
           call      run_program
+          call      print_result
           call      write_compiled
 
           xor       rdi, rdi      ; exit code
