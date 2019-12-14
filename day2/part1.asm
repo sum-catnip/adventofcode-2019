@@ -1,6 +1,6 @@
 ; build with
 ; nasm -felf64 part1.asm
-; gcc -static part1.o
+; ld part1.o -o compiler
 
 ; this will run the input file "program"
 ; and output the compiled result in the file "compiled"
