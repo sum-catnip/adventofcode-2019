@@ -2,18 +2,25 @@
 ; nasm -felf64 part1.asm
 ; gcc -static part1.o
 
+; this will run the input file "program"
+; and output the compiled result in the file "compiled"
+; the output will be in a binary format representing the intcode
+; every number string will be turned into a 32bit integer
+; and the delimiters are removed since the boundaries are constant
+; view the output with `hexdump`
 
-%define   O_RDONLY  0
 
-%define   PROT_READ 1
-%define   PROT_WRITE 2
+%define   O_RDONLY  0x0
+%define   O_WRONLY  0x1
+%define   O_CREAT   0x64
 
-%define   MAP_PRIVATE 2
-%define   MAP_ANONYMOUS 20
+%define   PROT_READ  0x1
+%define   PROT_WRITE 0x2
 
-          global    main
-          extern    puts
-          extern    printf
+%define   MAP_PRIVATE   0x2
+%define   MAP_ANONYMOUS 0x20
+
+global    _start
 
 struc FSTAT
     .st_dev         resq 1
@@ -39,7 +46,6 @@ struc PROG
     .start          resq 1
     .end            resq 1
     .size           resq 1
-    .index          resq 1
 endstruc
 
 
@@ -47,30 +53,29 @@ endstruc
           fstat     resb FSTAT_size
           compiled  resb PROG_size
           raw       resb PROG_size
-          program   resq 0x01
-          prog_size resq 0x01
-          pc        resq 0x01
+          program   resq 1
+          prog_size resq 1
+          pc        resq 1
 
 
           section   .rodata
-welcome_msg:
-          db        "loading program file in memory...", 0
 program_path:
           db        "program", 0
-instruction_format:
-          db        "inst: %d", 10, 0
+compiled_path:
+          db        "compiled", 0
+error_msg:
+          db        "encountered unknown opcode", 10, 0
+error_msg_sz: equ $-error_msg
 
 
           section   .text
-
-
 initialize:
           enter     0,   0          ; prologue with 0 space for locals
 
           ; first we load the raw program into memory
           mov       rdi, program_path; *filename
-          xor       rsi, rsi        ; flags
-          mov       rdx, O_RDONLY   ; mode
+          mov       rsi, O_RDONLY   ; flags
+          xor       rdx, rdx        ; mode
           mov       rax, 0x2        ; sys_open
           syscall
 
@@ -90,7 +95,6 @@ initialize:
 
           ; next we initialize the raw program structure
           mov       [raw + PROG.start], rax ; store address the mapped file 
-          mov       [raw + PROG.index], rax
           mov       [raw + PROG.size], rsi ; save size for convenient access
           add       rsi, rax        ; calculate end of program
           mov       [raw + PROG.end], rsi
@@ -102,7 +106,7 @@ initialize:
 
           ; allocate memory for the compiled program
           ; some implementations require fd to be 0 for MAP_ANON
-          mov       r8, -1
+          mov       r8, 0
           xor       rdi, rdi        ; addr
           mov       rsi, [raw + PROG.size]
           shl       rsi, 2          ; program size * 4 (max possible size)
@@ -114,7 +118,6 @@ initialize:
 
           ; save start addr. size and end are not known yet
           mov       [compiled + PROG.start], rax
-          mov       [compiled + PROG.index], rax
 
           leave                     ; epilogue
           ret
@@ -133,7 +136,7 @@ compile_program:
 .loop_start:
           mov       r8b, byte [rsi] ; get current char
           inc       rsi
-          cmp       r8b, ';'        ; did we reach the delimiter yet?
+          cmp       r8b, ','        ; did we reach the delimiter yet?
           je        .delimiter
 
           sub       r8b, '0'
@@ -149,116 +152,136 @@ compile_program:
 .continue:
           cmp       rsi, rdi
           jne       .loop_start
+          ; last number doesnt have a delim
+          mov       [r9], eax
+          add       r9, 4
+
+          mov       [compiled + PROG.end], r9
+          sub       r9, [compiled + PROG.start]
+          mov       [compiled + PROG.size], r9
 
           leave
           ret
 
 
-; ; parses the opcode at the current [pc]
-; ; calls the appropriate function to handle the opcode
-; scan_opcode:
-;           enter     0, 0
-;           mov       r12, [pc]       ; dereference pc into r12
-;           cmp       byte [r12], '1' ; check if current opcode is opcode '1'
-;           jnz       .check_op2
-;           mov       rdi, instruction_format
-;           mov       rsi, 1
-;           xor       rax, rax
-;           call printf
-; .check_op2:
-;           cmp       byte [r12], '2'
-;           jnz       .check_op99
-;           mov       rdi, instruction_format
-;           mov       rsi, 2
-;           xor       rax, rax
-;           call printf
-; .check_op99:
-;           cmp       word [r12], '99'
-;           jnz       .end
-;           mov       rdi, instruction_format
-;           mov       rsi, 99
-;           xor       rax, rax
-;           call printf
-; .end:
-;           leave
-;           ret
+write_compiled:
+          enter     0, 0
+
+          ; open target file
+          mov       rdi, compiled_path ; *filename
+          mov       rsi, O_WRONLY | O_CREAT ; flags
+          mov       rdx, 0q664    ; mode
+          mov       rax, 0x2      ; sys_open
+          syscall
+
+          mov       r8, rax       ; save fd
+          mov       rdi, rax      ; fd
+          mov       rsi, [compiled + PROG.start] ; *buffer
+          mov       rdx, [compiled + PROG.size] ; count
+          mov       rax, 0x1      ; sys_write
+          syscall
+
+          mov       rdi, r8       ; fd
+          mov       rax, 0x3      ; sys_close
+          syscall
+
+          leave
+          ret
 
 
-; ; calculate the remaining program bytes (bytes not yet executed)
-; calc_remaining:
-;           enter     0, 0
+run_program:
+          enter     0, 0
 
-;           lea       rax, [raw + PROG.end] ; find end of prog in memory
-;           sub       rax, [raw + PROG.index] ; diff pc - end of prog
-;           dec       rax                  ; not counting the byte were at
+          mov       rax, rax
+          mov       rsi, [compiled + PROG.start]
+          mov       rcx, rsi
+          mov       rdi, [compiled + PROG.end]
 
-;           leave
-;           ret
+.loop_start:
+          mov       eax, [rcx] ; current opcode
+          add       rcx, 4
+          cmp       eax, 1 ; opcode 1?
+          jne       .check_op2
+          ; opcode 1 logic
+          xor       r8, r8
+          xor       r9, r9
+          xor       r10, r10
+
+          mov       r8d, dword [rcx]
+          mov       r8d, dword [rsi + r8 * 4]
+          add       rcx, 4
+
+          mov       r9d, dword [rcx]
+          add       r8d, dword [rsi + r9 * 4]
+          add       rcx, 4
+  
+          mov       r10d, dword [rcx]
+          mov       [rsi + r10 * 4], r8d
+          add       rcx, 4
+          jmp       .continue
+
+.check_op2:
+          cmp       eax, 2
+          jne       .check_op99
+          ; opcode 2 logic
+          xor       r8, r8
+          xor       r9, r9
+          xor       r10, r10
+
+          mov       r8d, dword [rcx]
+          mov       r8d, dword [rsi + r8 * 4]
+          add       rcx, 4
+
+          mov       r9d, dword [rcx]
+          imul      r8d, dword [rsi + r9 * 4]
+          add       rcx, 4
+  
+          mov       r10d, dword [rcx]
+          mov       [rsi + r10 * 4], r8d
+          add       rcx, 4
+          jmp       .continue
+
+.check_op99:
+          cmp       eax, 99
+          jne       .default
+          jmp       .end
+
+.default:
+          ; opcode error
+          push      rsi
+          push      rdi
+          push      rax
+
+          mov       rdi, 1        ; fd (stdout)
+          mov       rsi, error_msg ; string to output
+          mov       rdx, error_msg_sz
+          mov       rax, 1        ; sys_write
+          syscall
+
+          pop       rax
+          pop       rdi
+          pop       rsi
+          jmp       .continue
+
+.continue:
+          cmp       rcx, rdi
+          jne       .loop_start
+
+.end:
+          mov       [compiled + PROG.end], rcx
+          sub       rcx, rsi
+          mov       [compiled + PROG.size], rcx
+
+          leave
+          ret
 
 
-; ; progresses the program counter until after the next delimiter
-; ; returns how far we moved
-; progress_delimiter:
-;           enter     0, 0
-
-;           call      calc_remaining
-;           mov       rcx, rax             ; remaining bytes into rcx
-;           mov       rax, ','             ; find next occurence of ';'
-;           mov       rdi, [raw + PROG.index] ; starting from pc
-;           mov       r8, rdi              ; save current pc
-;           repne     scasb                ; inc rdi until [rdi] = ','
-;           mov       [raw + PROG.index], rdi
-;           sub       r8, rdi
-;           mov       rax, r8              ; return how far we moved
-
-;           leave
-;           ret
-
-
-; ; parses a string number to an x64 integer
-; ; rdi should hold the size of the string
-; ; rsi should hold the start of the string
-; parse_number:
-;           enter     0, 0
-;           xor       rax, rax             ; result will be in eax
-;           mov       rcx, rdi             ; loop count needs to be in rcx
-
-; .loop_start:
-;           mov       r9, rdi              ; safe string size
-;           sub       r9, rcx              ; how often did we loop yet?
-;           mov       r8, '0'              ; start of ascii number range
-;           sub       r8, [rsi + r9]       ; r8 now holds the int
-;           imul      eax, 10              ; make sum space for the new number
-;           add       eax, r8
-
-;           loop      .loop_start          ; loops rcx times
-
-;           leave
-;           ret
-
-
-; ; processes the opcode 1
-; process_op1:
-;           enter     0, 0
-
-;           mov       r12, [pc]            ; save start of number
-;           call      progress_delimiter   ; move to the next operhand
-          
-;           ; rax holds the distance we moved
-;           ; TODO parse 3 arbitrary sized ints
-
-;           leave
-        ;   ret
-
-
-main:
-          mov       rdi, welcome_msg 
-          call      puts
+_start:
           call      initialize
           call      compile_program
-        ;   call      scan_opcode
-        ;   call      progress_delimiter
-        ;   mov       rdi, [pc]
-        ;   call      puts
+          call      run_program
+          call      write_compiled
 
-          ret
+          xor       rdi, rdi      ; exit code
+          mov       rax, 60       ; sys_exit
+          syscall
