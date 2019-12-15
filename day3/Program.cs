@@ -26,13 +26,30 @@ namespace day3 {
     }
 
     class Space {
-        private Dictionary<Vector2, int> used = new Dictionary<Vector2, int>();
-        public IList<Vector2> Intersections = new List<Vector2>();
+        private Dictionary<Vector2, Step> used = new Dictionary<Vector2, Step>();
+        public IList<Step> Intersections = new List<Step>();
 
-        public void use(Vector2 pos, int cableID) {
-            if(! used.TryAdd(pos, cableID))
-                if(used[pos] != cableID) Intersections.Add(pos);
+        public void use(Step step) {
+            if(! used.TryAdd(step.Pos, step)) {
+                if(used[step.Pos].Cable != step.Cable) Intersections.Add(
+                    step.add_count(used[step.Pos].Count));
+                used[step.Pos] = step;
+            }
         }
+    }
+
+    class Step {
+        public int Count {get;}
+        public int Cable {get;}
+        public Vector2 Pos {get;}
+        public Step(int cable, int count, float x, float y) {
+            Cable = cable;
+            Count = count;
+            Pos   = new Vector2(x, y);
+        }
+
+        public Step add_count(int count) =>
+            new Step(Cable, Count + count, Pos.X, Pos.Y);
     }
 
     class Program {
@@ -43,14 +60,18 @@ namespace day3 {
         static void map_cable(
             Space space, int cableID,
             IEnumerable<Instruction> instructions) {
-
+            int steps = 0;
             var pos = new Vector2(0, 0);
             foreach(Instruction inst in instructions) {
                 foreach(var action in inst.Direction switch {
-                    "R" => rep(inst.Number, () => space.use(new Vector2(++pos.X, pos.Y), cableID)),
-                    "L" => rep(inst.Number, () => space.use(new Vector2(--pos.X, pos.Y), cableID)),
-                    "U" => rep(inst.Number, () => space.use(new Vector2(pos.X, ++pos.Y), cableID)),
-                    "D" => rep(inst.Number, () => space.use(new Vector2(pos.X, --pos.Y), cableID))
+                    "R" => rep(inst.Number, () =>
+                        space.use(new Step(cableID, ++steps, ++pos.X, pos.Y))),
+                    "L" => rep(inst.Number, () =>
+                        space.use(new Step(cableID, ++steps, --pos.X, pos.Y))),
+                    "U" => rep(inst.Number, () =>
+                        space.use(new Step(cableID, ++steps, pos.X, ++pos.Y))),
+                    "D" => rep(inst.Number, () =>
+                        space.use(new Step(cableID, ++steps, pos.X, --pos.Y)))
                 }) action();
             }
         }
@@ -69,10 +90,14 @@ namespace day3 {
             perf.Stop();
 
             Console.WriteLine(
-                "closest intersection: " +
+                "closest intersection by distance: " +
                 space.Intersections
-                    .OrderBy(v => Math.Abs(v.X) + Math.Abs(v.Y))
-                    .First());
+                    .OrderBy(i => Math.Abs(i.Pos.X) + Math.Abs(i.Pos.Y))
+                    .First().Pos);
+
+            Console.WriteLine(
+                "closest intersection by steps: " +
+                space.Intersections.OrderBy(s => s.Count).First().Count);
 
             Console.WriteLine($"calculated in {perf.Elapsed}");
         }
